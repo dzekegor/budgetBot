@@ -1,9 +1,11 @@
+import datetime
 import os
 import sqlite3
 import telebot
 from io import BytesIO
 import numpy as np
 import matplotlib.pyplot as plt
+
 bot = telebot.TeleBot(os.environ['TELEGRAM_TOKEN'])  # replace this with your own Telegram bot token
 
 conn = sqlite3.connect('budget.db', check_same_thread=False)
@@ -43,6 +45,7 @@ cur.execute('''CREATE TABLE IF NOT EXISTS planned_income
                 category TEXT,
                 FOREIGN KEY (category) REFERENCES categories (name));''')
 
+
 @bot.message_handler(commands=['start'])
 def start(message):
     """Send a welcome message when the command /start is issued.
@@ -56,7 +59,10 @@ def start(message):
     """
     keyboard = telebot.types.ReplyKeyboardMarkup()
     keyboard.row('Новый доход', 'Новая трата')
-    keyboard.row('Отчёт', 'Планирование')
+    keyboard.row('Статистика', 'Планирование')
+    webAppTest = telebot.types.WebAppInfo("https://telegram.mihailgok.ru")
+    one_butt = telebot.types.KeyboardButton(text="Тестовая страница", web_app=webAppTest)
+    keyboard.row(one_butt)
     bot.reply_to(message, 'Привет, это трекинг бюджета семьи Губановых-Полтарыхиных!', reply_markup=keyboard)
 
 
@@ -165,8 +171,8 @@ def exit_planning(message):
     Статистика - show the statistics
     """
     keyboard = telebot.types.ReplyKeyboardMarkup()
-    keyboard.row('Доход', 'Траты')
-    keyboard.row('Планирование', 'Статистика')
+    keyboard.row('Новый доход', 'Новая трата')
+    keyboard.row('Статистика', 'Планирование')
     bot.reply_to(message, 'Выберите действие:', reply_markup=keyboard)
 
 
@@ -204,7 +210,7 @@ def add_income_category(message, amount):
     conn.commit()
     keyboard = telebot.types.ReplyKeyboardMarkup()
     keyboard.row('Новый доход', 'Новая трата')
-    keyboard.row('Отчёт', 'Планирование')
+    keyboard.row('Статистика', 'Планирование')
     bot.reply_to(message, f'Доход {amount} в категории {category} сохранён.', reply_markup=keyboard)
 
 
@@ -250,15 +256,29 @@ def add_expense_description(message, amount, category):
     """Add a new expense entry.
     """
     description = message.text
-    cur.execute("INSERT INTO expenses (amount, category, description) VALUES (?, ?, ?)", (amount, category, description))
+    cur.execute("INSERT INTO expenses (amount, category, description) VALUES (?, ?, ?)",
+                (amount, category, description))
     conn.commit()
     keyboard = telebot.types.ReplyKeyboardMarkup()
-    keyboard.row('Новый доход', 'Новая трата')
-    keyboard.row('Отчёт', 'Планирование')
+    keyboard.row('Траты по категориям')
+    keyboard.row('Выйти из режима статистики')
     bot.reply_to(message, f'Трата {amount} в категории {category} добавлена.', reply_markup=keyboard)
 
+@bot.message_handler(func=lambda message: message.text == 'Статистика')
+def statistics(message):
+    """Handles the 'Statistics' button click.
+    The user is prompted to choose an action.
+    The user can choose between the following actions:
+    Report - generate a report of the user's income and expenses.
+    Expenses by category - generate a report of the user's expenses by category
+    """
+    keyboard = telebot.types.ReplyKeyboardMarkup()
+    keyboard.row('Отчёт', 'Траты по категориям')
+    keyboard.row('Выйти из режима статистики')
+    bot.reply_to(message, 'Выберите действие:', reply_markup=keyboard)
 
-@bot.message_handler(func=lambda message: message.text == 'Отчёт' or message.text == 'Статистика')
+
+@bot.message_handler(func=lambda message: message.text == 'Отчёт')
 def report(message):
     """Generate a report of the user's income and expenses."""
     cur.execute("SELECT category, SUM(amount) FROM income GROUP BY category")
@@ -277,8 +297,8 @@ def report(message):
     report_text += '\n'
     report_text += f'Остаток: {int(income_total) - int(sum(expenses.values()))}'
     keyboard = telebot.types.ReplyKeyboardMarkup()
-    keyboard.row('Новый доход', 'Новая трата')
-    keyboard.row('Отчёт', 'Планирование')
+    keyboard.row('Отчёт', 'Траты по категориям')
+    keyboard.row('Выйти из режима статистики')
     pastel_green = '#77DD77'
     pastel_red = '#FF6961'
     pastel_blue = '#AEC6CF'
@@ -317,7 +337,6 @@ def report(message):
     bar_file.seek(0)
     plt.close()
 
-
     # Create a pie diagram for expenses categories
     cur.execute("SELECT category, SUM(amount) FROM expenses GROUP BY category")
     expenses = dict(cur.fetchall())
@@ -338,6 +357,56 @@ def report(message):
     bot.send_media_group(message.chat.id, [telebot.types.InputMediaPhoto(pie_file),
                                            telebot.types.InputMediaPhoto(bar_file)])
     bot.reply_to(message, report_text, reply_markup=keyboard)
+
+
+@bot.message_handler(func=lambda message: message.text == 'Выйти из режима статистики')
+def exit_report(message):
+    """Exit the report mode."""
+    keyboard = telebot.types.ReplyKeyboardMarkup()
+    keyboard.row('Новый доход', 'Новая трата')
+    keyboard.row('Статистика', 'Планирование')
+    bot.reply_to(message, 'Вы вышли из режима статистики.', reply_markup=keyboard)
+
+
+@bot.message_handler(func=lambda message: message.text == 'Траты по категориям')
+def report_expenses(message):
+    """Let user choose a category to see the expenses for."""
+    keyboard = telebot.types.ReplyKeyboardMarkup()
+    keyboard.row('Выйти из режима статистики')
+    cur.execute("SELECT category FROM expenses GROUP BY category")
+    categories = [category[0] for category in cur.fetchall()]
+    for category in categories:
+        keyboard.row(category)
+    bot.reply_to(message, 'Выберите категорию:', reply_markup=keyboard)
+    bot.register_next_step_handler(message, report_expenses_category)
+
+
+def report_expenses_category(message):
+    """Show the expenses for a chosen category."""
+    if message.text == 'Выйти из режима статистики':
+        exit_report(message)
+        return
+    category = message.text
+    keyboard = telebot.types.ReplyKeyboardMarkup()
+    cur.execute("SELECT amount, description, timestamp FROM expenses WHERE category = ?", (category,))
+    # Get current time zone of the server
+    tz = datetime.timezone(datetime.timedelta(hours=12))
+    expenses = cur.fetchall()
+    report_text = f'Траты по категории {category}:\n'
+    for expense in expenses:
+        local_time = datetime.datetime.strptime(expense[2], '%Y-%m-%d %H:%M:%S')
+
+        # Convert datetime object to string in format "5 марта 12:00"
+        local_time_str = local_time.strftime('%-d %B %H:%M')
+        # Localize month names from English to Russian
+        months = {'January': 'января', 'February': 'февраля', 'March': 'марта', 'April': 'апреля', 'May': 'мая',
+                  'June': 'июня', 'July': 'июля', 'August': 'августа', 'September': 'сентября', 'October': 'октября',
+                  'November': 'ноября', 'December': 'декабря'}
+        for month in months.keys():
+            local_time_str = local_time_str.replace(month, months[month])
+        report_text += f'{local_time_str} - {int(expense[0])} - {expense[1]}\n'
+    bot.reply_to(message, report_text)
+    bot.register_next_step_handler(message, report_expenses_category)
 
 
 bot.infinity_polling()
